@@ -166,53 +166,25 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
       bool shouldReadText = false;
       
       if (detections.isEmpty) {
-        announcement = "Pathway clear."; // Updated to say "Pathway clear" if nothing detected
+        announcement = "Pathway clear."; 
       } else {
-        // Prioritize stairs with step count
-        final staircase = detections.firstWhere(
-          (d) => d.isStaircase, 
-          orElse: () => DetectedObject(label: "", confidence: 0, left:0, top:0, width:0, height:0, distanceMeters: 0)
-        );
+        // Use the new guidance logic
+        announcement = _generateSafeNavigationMessage(detections);
         
-        // Check for doors
-        final door = detections.firstWhere(
-          (d) => d.isDoor, 
-          orElse: () => DetectedObject(label: "", confidence: 0, left:0, top:0, width:0, height:0, distanceMeters: 0)
-        );
-        
-        // Check for signs/text
+        // Check if we need to trigger OCR
         final sign = detections.firstWhere(
             (d) => d.label.toLowerCase().contains('sign') || d.label.toLowerCase().contains('text'),
             orElse: () => DetectedObject(label: "", confidence: 0, left:0, top:0, width:0, height:0, distanceMeters: 0)
         );
-
-        if (staircase.label.isNotEmpty) {
-           HapticFeedback.heavyImpact(); // DANGER WARNING
-           String stepInfo = staircase.stepCount > 0 
-               ? " with approximately ${staircase.stepCount} steps"
-               : "";
-           announcement = "Caution! Staircase detected ${staircase.locationLabel} at ${staircase.distanceMeters.toStringAsFixed(1)} meters$stepInfo.";
-        } else if (door.label.isNotEmpty) {
-           // Announce door with open/close status
-           String doorStatus = door.isDoorOpen ? "open" : "closed";
-           announcement = "${door.label} detected ${door.locationLabel} at ${door.distanceMeters.toStringAsFixed(1)} meters. The door appears to be $doorStatus.";
-        } else if (sign.label.isNotEmpty) {
-           announcement = "Sign board detected. Reading text...";
+        
+        if (sign.label.isNotEmpty && !announcement.contains("blocked")) {
+           // If path isn't critically blocked, offer to read sign
+           // We append this optionally or handle it? 
+           // For now, let's just flag it. The user wants guidance first.
            shouldReadText = true;
-        } else {
-            // Provide detail for top 5 objects
-            final itemsToShow = detections.take(5).toList();
-            final details = itemsToShow.map((d) {
-              String extra = "";
-              if (d.isStaircase && d.stepCount > 0) {
-                extra = " with ${d.stepCount} steps";
-              } else if (d.isDoor) {
-                extra = d.isDoorOpen ? " (open)" : " (closed)";
-              }
-              return "${d.label}$extra is ${d.locationLabel}, ${d.distanceMeters.toStringAsFixed(1)} meters away";
-            }).toList();
-            
-            announcement = "There is a ${details.join('. Next, ')}.";
+           if (announcement == "Pathway clear.") {
+             announcement = "Sign board detected. Reading text...";
+           }
         }
       }
 
@@ -242,6 +214,99 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
     } finally {
       _isProcessing = false;
     }
+  }
+
+  /// ----------------------------------------------------------
+  /// GUIDANCE LOGIC
+  /// ----------------------------------------------------------
+  
+  String _generateSafeNavigationMessage(List<DetectedObject> detections) {
+    if (detections.isEmpty) return "Pathway clear.";
+
+    // 1. Filter relevant objects (close enough to be an obstacle, e.g. < 4m)
+    // We include small objects too as requested
+    final obstacles = detections.where((d) => d.distanceMeters < 4.0).toList();
+    
+    if (obstacles.isEmpty) return "Pathway clear.";
+
+    // 2. Check for Critical Hazards (Stairs/Doors)
+    final stairs = obstacles.where((d) => d.isStaircase).toList();
+    if (stairs.isNotEmpty) {
+      final s = stairs.first;
+      return "Caution. Stairs detected ${s.locationLabel}. ${s.stepCount > 0 ? '${s.stepCount} steps.' : ''} Approach carefully.";
+    }
+    
+    // Check for Doors explicitly
+    final doors = obstacles.where((d) => d.isDoor).toList();
+    if (doors.isNotEmpty) {
+      final door = doors.first;
+      if (door.isDoorOpen) {
+         // If open door is roughly distinct, guide towards it?
+         // For now, simpler: "Open Door ahead. Proceed through."
+         // We check if it is relatively centered
+         double doorCenter = door.left + (door.width / 2);
+         if (doorCenter > 0.3 && doorCenter < 0.7) {
+            return "Open Door ahead. Proceed through.";
+         }
+      } else {
+         return "Closed Door ahead. Stop.";
+      }
+    }
+
+    // 3. Analyze Sectors for Guidance
+    bool leftBlocked = false;
+    bool centerBlocked = false;
+    bool rightBlocked = false;
+    
+    DetectedObject? centerObstacle;
+    DetectedObject? leftObstacle;
+    DetectedObject? rightObstacle;
+
+    // Define sectors: Left (<0.4), Center (0.4-0.6), Right (>0.6)
+    // Expanded center zone slightly for safety
+    for (var d in obstacles) {
+       // Center point of the object
+       double objCenter = d.left + (d.width / 2);
+       
+       if (objCenter < 0.4) {
+         leftBlocked = true;
+         leftObstacle ??= d;
+       } else if (objCenter > 0.6) {
+         rightBlocked = true;
+         rightObstacle ??= d;
+       } else {
+         centerBlocked = true;
+         centerObstacle ??= d;
+       }
+    }
+
+    // 4. Generate Instructions
+    // Priority: Avoid Center Collision -> Avoid Side Collision
+    
+    if (centerBlocked) {
+       String obs = centerObstacle?.label ?? "Obstacle";
+       
+       if (!leftBlocked && !rightBlocked) {
+         return "$obs ahead. Move Left or Right.";
+       } else if (!leftBlocked) {
+         return "$obs ahead. Move Left.";
+       } else if (!rightBlocked) {
+         return "$obs ahead. Move Right.";
+       } else {
+         return "Path blocked by $obs. Stop.";
+       }
+    } 
+    
+    // Center is clear, check sides to ensure "avoidance" guidance
+    if (leftBlocked) {
+       return "${leftObstacle?.label} on left. Move Right to avoid.";
+    } 
+    
+    if (rightBlocked) {
+       return "${rightObstacle?.label} on right. Move Left to avoid.";
+    }
+    
+    return "Pathway clear.";
   }
 
   /// ----------------------------------------------------------
