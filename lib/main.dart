@@ -109,9 +109,8 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
       }
     };
     
-    // Set up fall detection callback
-    // Set up fall detection callback
-    _emergencyService.setCountdownUpdateCallback(_handleEmergencyUpdate);
+    // Set up fall detection listener
+    _emergencyService.addListener(_handleEmergencyUpdate);
 
     if (_emergencyService.isConfigured && _emergencyService.isMonitoring == false) {
       _emergencyService.startMonitoring();
@@ -233,7 +232,7 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
     final stairs = obstacles.where((d) => d.isStaircase).toList();
     if (stairs.isNotEmpty) {
       final s = stairs.first;
-      return "Caution. Stairs detected ${s.locationLabel}. ${s.stepCount > 0 ? '${s.stepCount} steps.' : ''} Approach carefully.";
+      return "Caution. Stairs detected ${s.locationLabel}, ${s.distanceMeters.toStringAsFixed(1)} meters away. ${s.stepCount > 0 ? '${s.stepCount} steps.' : ''} Approach carefully.";
     }
     
     // Check for Doors explicitly
@@ -246,10 +245,10 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
          // We check if it is relatively centered
          double doorCenter = door.left + (door.width / 2);
          if (doorCenter > 0.3 && doorCenter < 0.7) {
-            return "Open Door ahead. Proceed through.";
+            return "Open Door ahead, ${door.distanceMeters.toStringAsFixed(1)} meters away. Proceed through.";
          }
       } else {
-         return "Closed Door ahead. Stop.";
+         return "Closed Door ahead, ${door.distanceMeters.toStringAsFixed(1)} meters away. Stop.";
       }
     }
 
@@ -285,25 +284,27 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
     
     if (centerBlocked) {
        String obs = centerObstacle?.label ?? "Obstacle";
+       double dist = centerObstacle?.distanceMeters ?? 0;
+       String distStr = "${dist.toStringAsFixed(1)} meters";
        
        if (!leftBlocked && !rightBlocked) {
-         return "$obs ahead. Move Left or Right.";
+         return "$obs ahead at $distStr. Move Left or Right.";
        } else if (!leftBlocked) {
-         return "$obs ahead. Move Left.";
+         return "$obs ahead at $distStr. Move Left.";
        } else if (!rightBlocked) {
-         return "$obs ahead. Move Right.";
+         return "$obs ahead at $distStr. Move Right.";
        } else {
-         return "Path blocked by $obs. Stop.";
+         return "Path blocked by $obs at $distStr. Stop.";
        }
     } 
     
     // Center is clear, check sides to ensure "avoidance" guidance
     if (leftBlocked) {
-       return "${leftObstacle?.label} on left. Move Right to avoid.";
+       return "${leftObstacle?.label} on left, ${leftObstacle?.distanceMeters.toStringAsFixed(1)} meters. Move Right to avoid.";
     } 
     
     if (rightBlocked) {
-       return "${rightObstacle?.label} on right. Move Left to avoid.";
+       return "${rightObstacle?.label} on right, ${rightObstacle?.distanceMeters.toStringAsFixed(1)} meters. Move Left to avoid.";
     }
     
     return "Pathway clear.";
@@ -347,7 +348,6 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
     // If fall alert is active, cancel it
     if (_emergencyService.isAlertActive) {
       _emergencyService.cancelFallAlert();
-      _dismissFallAlertDialog();
       return;
     }
     
@@ -360,13 +360,6 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
   }
   
   // Dismiss the fall alert dialog if shown
-  void _dismissFallAlertDialog() {
-    if (_fallAlertDialogContext != null && Navigator.canPop(_fallAlertDialogContext!)) {
-      _isDialogMounted = false;
-      Navigator.of(_fallAlertDialogContext!).pop();
-      _fallAlertDialogContext = null;
-    }
-  }
   
   // Context for fall alert dialog
   BuildContext? _fallAlertDialogContext;
@@ -376,8 +369,8 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
   void _showFallAlertDialog() {
     if (!mounted || _fallAlertDialogContext != null) return;
     
+    HapticFeedback.heavyImpact();
     _isDialogMounted = true;
-    _ttsService.speak("Fall detected! Double tap anywhere to cancel or stay still to send alert.", force: true);
 
     showGeneralDialog(
       context: context,
@@ -386,19 +379,19 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
       barrierColor: Colors.black.withOpacity(0.5), // Semi-transparent top
       pageBuilder: (dialogContext, anim1, anim2) {
         _fallAlertDialogContext = dialogContext;
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            _emergencyService.setCountdownUpdateCallback(() {
-              if (mounted && _isDialogMounted) {
-                setDialogState(() {});
-                setState(() {});
-                if (!_emergencyService.isAlertActive && _fallAlertDialogContext != null) {
-                  _isDialogMounted = false;
-                  Navigator.of(_fallAlertDialogContext!).pop();
-                  _fallAlertDialogContext = null;
-                }
-              }
-            });
+        return ListenableBuilder(
+          listenable: _emergencyService,
+          builder: (context, _) {
+            // Check for dismissal automatically
+            if (!_emergencyService.isAlertActive && _fallAlertDialogContext != null) {
+               WidgetsBinding.instance.addPostFrameCallback((_) {
+                 if (_fallAlertDialogContext != null) {
+                    _isDialogMounted = false;
+                    Navigator.of(_fallAlertDialogContext!).pop();
+                    _fallAlertDialogContext = null;
+                 }
+               });
+            }
             
             return PopScope(
               canPop: false, // Prevent back button dismiss
@@ -407,10 +400,7 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
                 body: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onDoubleTap: () {
-                    _isDialogMounted = false;
                     _emergencyService.cancelFallAlert();
-                    Navigator.of(dialogContext).pop();
-                    _fallAlertDialogContext = null;
                   },
                   child: Column(
                     children: [
@@ -429,9 +419,9 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
                           children: [
                             const Icon(Icons.warning_rounded, color: Colors.redAccent, size: 60),
                             const SizedBox(height: 10),
-                            const Text(
+                            Text(
                               "FALL DETECTED",
-                              style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                              style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 1.5),
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 20),
@@ -480,20 +470,19 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
     ).then((_) {
       _isDialogMounted = false;
       _fallAlertDialogContext = null;
-      // RESTORE MAIN CALLBACK so next alert can trigger opening the dialog
-      _emergencyService.setCountdownUpdateCallback(_handleEmergencyUpdate);
     });
   }
 
   void _handleEmergencyUpdate() {
-    if (mounted) {
-      if (_fallAlertDialogContext == null) setState(() {}); 
-      
-      // Show fall alert dialog if not already shown
-      if (_emergencyService.isAlertActive && _fallAlertDialogContext == null) {
-        _showFallAlertDialog();
-      }
+    if (!mounted) return;
+    
+    // If an alert is active but the dialog is NOT currently showing, open it immediately
+    if (_emergencyService.isAlertActive && _fallAlertDialogContext == null) {
+      _showFallAlertDialog();
     }
+    
+    // Refresh main UI state (e.g., to update monitoring status colors)
+    setState(() {});
   }
 
   Widget _buildAlertButton(String label, Color color, VoidCallback onTap) {
@@ -509,6 +498,29 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
           child: Text(
             label,
             style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLanguageButton(String label, bool isSelected, VoidCallback onTap) {
+    return Material(
+      color: isSelected ? Colors.orangeAccent : Colors.white.withOpacity(0.05),
+      borderRadius: BorderRadius.circular(15),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(15),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: isSelected ? Colors.black : Colors.white, 
+              fontSize: 16, 
+              fontWeight: FontWeight.bold
+            ),
           ),
         ),
       ),
@@ -644,6 +656,39 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
                 ),
                 
                 const SizedBox(height: 30),
+
+                // Language Selection
+                const Text("VOICE GUIDANCE LANGUAGE", style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.w900, fontSize: 12, letterSpacing: 1.5)),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildLanguageButton(
+                        "English", 
+                        !_ttsService.isMalayalam, 
+                        () async {
+                          await _ttsService.setLanguage("en-US");
+                          setDialogState((){});
+                          setState((){});
+                        }
+                      ),
+                    ),
+                    const SizedBox(width: 15),
+                    Expanded(
+                      child: _buildLanguageButton(
+                        "മലയാളം", 
+                        _ttsService.isMalayalam, 
+                        () async {
+                          await _ttsService.setLanguage("ml-IN");
+                          setDialogState((){});
+                          setState((){});
+                        }
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 30),
                 
                 // Monitoring Toggle
                 Container(
@@ -659,9 +704,11 @@ class _BlindSafeHomeScreenState extends State<BlindSafeHomeScreen> with WidgetsB
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text("System Monitoring", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+                          const Text("Active Monitoring", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
                           Text(
-                            _emergencyService.isMonitoring ? "Active & Detecting" : "Currently Disabled",
+                            _emergencyService.isMonitoring 
+                              ? "Active & Detecting" 
+                              : "Currently Disabled",
                             style: TextStyle(color: _emergencyService.isMonitoring ? Colors.redAccent : Colors.white54, fontSize: 14),
                           ),
                         ],

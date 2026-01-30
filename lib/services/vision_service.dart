@@ -322,8 +322,8 @@ class VisionService {
               }
             }
           }
-          // General Color Detection (excluding 'person')
-          else if (label != 'person') {
+          // General Color Detection (excluding 'person' and 'chair')
+          else if (label != 'person' && label != 'chair') {
              if (!imageDecoded) {
               decodedImage = img.decodeImage(imageBytes);
               imageDecoded = true;

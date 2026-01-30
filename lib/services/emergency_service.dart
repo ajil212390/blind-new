@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'tts_service.dart';
 
-class EmergencyService {
+class EmergencyService extends ChangeNotifier {
   final TtsService _ttsService;
   static const _channel = MethodChannel('com.blindnav/sms');
   VoidCallback? onSmsSent;
@@ -24,15 +24,14 @@ class EmergencyService {
   StreamSubscription<UserAccelerometerEvent>? _shakeSubscription;
   DateTime? _lastShakeTime;
   int _shakeCount = 0;
-  static const double _shakeThreshold = 45.0; // Increased from 18.0
-  static const int _minShakeCount = 8; // Increased from 3
-  static const int _shakeWindowMs = 1200; // Increased window from 2000
+  static const double _shakeThreshold = 30.0; // Reduced for better detection
+  static const int _minShakeCount = 6; // Reduced for better detection
+  static const int _shakeWindowMs = 1500; // Increased window for natural movements
 
   // Fall alert state
   bool _isAlertActive = false;
   Timer? _countdownTimer;
   int _remainingSeconds = 10;
-  VoidCallback? _onCountdownUpdate;
   
   late SharedPreferences _prefs;
   static const String _keyNumbers = "emergency_numbers";
@@ -109,6 +108,7 @@ class EmergencyService {
     });
 
     // 2. Shake Monitor
+    HapticFeedback.mediumImpact(); // Confirmation vibration
     _shakeSubscription = userAccelerometerEventStream().listen((UserAccelerometerEvent event) {
       _analyzeShakeData(event);
     });
@@ -179,6 +179,7 @@ class EmergencyService {
   void _triggerFallAlert() {
     if (_isAlertActive) return; // Prevent multiple alerts
     
+    stopMonitoring(); // Stop sensors immediately while alert is pending
     _isAlertActive = true;
     _remainingSeconds = 10;
     
@@ -186,12 +187,11 @@ class EmergencyService {
     _ttsService.speak("Fall detected! Alert will be sent in 10 seconds. Double tap screen to cancel.", force: true);
     
     // Notify UI immediately to show screen
-    _onCountdownUpdate?.call();
+    notifyListeners();
 
-    // Start countdown timer
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
       _remainingSeconds--;
-      _onCountdownUpdate?.call();
+      notifyListeners();
       
       if (_remainingSeconds <= 3 && _remainingSeconds > 0) {
         _ttsService.speak("$_remainingSeconds", force: true);
@@ -200,9 +200,12 @@ class EmergencyService {
       if (_remainingSeconds <= 0) {
         timer.cancel();
         _countdownTimer = null;
-        await _sendEmergencyAlert();
         _isAlertActive = false;
-        _onCountdownUpdate?.call(); // Notify UI to close
+        notifyListeners(); // Close UI immediately
+        _remainingSeconds = 10; // Reset for next time
+        
+        // Trigger send in background
+        _sendEmergencyAlert();
       }
     });
   }
@@ -217,10 +220,11 @@ class EmergencyService {
     _remainingSeconds = 10;
     
     HapticFeedback.mediumImpact();
+    notifyListeners();
     
     // Restart monitoring after a short delay so it doesn't immediately re-trigger
     Future.delayed(const Duration(seconds: 3), () {
-      if (!_isMonitoring && _emergencyNumbers.isNotEmpty) {
+      if (!_isAlertActive && _emergencyNumbers.isNotEmpty) {
         startMonitoring();
       }
     });
@@ -233,17 +237,13 @@ class EmergencyService {
     _countdownTimer?.cancel();
     _countdownTimer = null;
     _isAlertActive = false;
+    notifyListeners();
     
     await _sendEmergencyAlert();
   }
-  
-  /// Set callback for countdown updates (for UI refresh)
-  void setCountdownUpdateCallback(VoidCallback callback) {
-    _onCountdownUpdate = callback;
-  }
 
   Future<void> _sendEmergencyAlert() async {
-    stopMonitoring(); // Stop monitoring to prevent loop
+    // Monitoring already stopped by _triggerFallAlert
     
     await _ttsService.speak("Sending emergency alerts now.", force: true);
     
