@@ -322,8 +322,14 @@ class VisionService {
               }
             }
           }
-          // General Color Detection (excluding 'person' and 'chair')
-          else if (label != 'person' && label != 'chair') {
+          // General Color Detection (excluding person, chair, and laptop-related items)
+          else if (label != 'person' && 
+                   label != 'chair' && 
+                   label != 'laptop' && 
+                   label != 'keyboard' && 
+                   label != 'mouse' && 
+                   label != 'monitor' && 
+                   label != 'cell phone') {
              if (!imageDecoded) {
               decodedImage = img.decodeImage(imageBytes);
               imageDecoded = true;
